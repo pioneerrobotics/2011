@@ -4,10 +4,17 @@
 
 package org.pihisamurai.robot;
 
+import edu.wpi.first.wpilibj.DigitalInput;
 import edu.wpi.first.wpilibj.DigitalOutput;
+import edu.wpi.first.wpilibj.DriverStationLCD;
+import edu.wpi.first.wpilibj.DriverStationLCD.Line;
+import edu.wpi.first.wpilibj.Encoder;
+import edu.wpi.first.wpilibj.Gyro;
 import edu.wpi.first.wpilibj.IterativeRobot;
 import edu.wpi.first.wpilibj.Jaguar;
 import edu.wpi.first.wpilibj.Joystick;
+import edu.wpi.first.wpilibj.Relay;
+import edu.wpi.first.wpilibj.Victor;
 
 public class Robot extends IterativeRobot {
 
@@ -26,17 +33,27 @@ public class Robot extends IterativeRobot {
     final double PWM_NOMINALSPEED = 1.0; /* Max value PWM is capable of */
     double PWM_CURRENTSPEED = PWM_NOMINALSPEED;
 
-    JaguarHelper jr1;
-    JaguarHelper jr2;
-    JaguarHelper jl1;
-    JaguarHelper jl2;
+    JaguarHelper jr1, jr2, jl1, jl2;
 
     Drivetrain drivetrain;
+    Manipulator manipulator;
     Joystick joystick1;
 
     ToggleListener perspectiveToggle;
 
+    Gyro gyro;
+
+    Encoder en1, en2;
+
+    //DigitalInput end1a, end1b, end2a, end2b;
+    DigitalInput d9;
+
+    DriverStationBuffer buffer;
     public void robotInit() {
+        buffer = new DriverStationBuffer();
+
+        buffer.println("Robot start.");
+
         jr1 = new JaguarHelper(PWM_SLOT, PWM_RIGHT_1);
         jr2 = new JaguarHelper(PWM_SLOT, PWM_RIGHT_2);
         jl1 = new JaguarHelper(PWM_SLOT, PWM_LEFT_1);
@@ -51,14 +68,41 @@ public class Robot extends IterativeRobot {
         else {
 
         }
+
+        gyro = new Gyro(1, 1);
+        gyro.setSensitivity(0.007d);
+
+        en1 = new Encoder(4, 5, 4, 6);
+        en2 = new Encoder(4, 7, 4, 8);
+
+        en1.start(); en2.start();
+
+        d9 = new DigitalInput(4, 9);
+        //en1 = new Encoder()
+
+        //end1a = new DigitalInput(4, 5);
+        //end1b = new DigitalInput(4, 6);
+        //end2a = new DigitalInput(4, 7);
+        //end2b = new DigitalInput(4, 8);
+
+        manipulator = new Manipulator();
+
+        buffer.println("Init finished.");
+    }
+
+    public void autonomousInit() {
+        buffer.println("Autonomous.");
     }
 
     public void autonomousPeriodic() {
 
     }
 
-    public void teleopPeriodic() {
+    public void teleopInit() {
+        buffer.println("Teleoperated.");
+    }
 
+    public void teleopPeriodic() {
         if(G27) {
 
             int reverse = 1;
@@ -102,8 +146,14 @@ public class Robot extends IterativeRobot {
             drivetrain.setBrakeLeft(true);
             }
         }
+        //printEncoderStatus();
+        System.out.println("d9: "+d9.get());
+        /* System.out.println("Gyro 1, 1: "+gyro.getAngle() % 180 + 180); */
 
-        printButtonsHeld();
+        //System.out.println("end1a: "+end1a.get()+" end1b: "+end1b.get()+
+                //" end2a: "+end2a.get()+" end2b: "+end2b.get());
+        //System.out.println("Something weird");
+        /* printButtonsHeld(); */
 
         /*System.out.println("Joystick X: "+joystick1.getX());
           System.out.println("Joystick Y: "+joystick1.getY());
@@ -138,7 +188,7 @@ public class Robot extends IterativeRobot {
         }
 
         /* Sets the speed of the right hand side of the drivetrain */
-        public void setRightSpeed(double speed) {
+        void setRightSpeed(double speed) {
             if(speed > PWM_CURRENTSPEED) {
                 speed = PWM_CURRENTSPEED;
             }
@@ -150,7 +200,7 @@ public class Robot extends IterativeRobot {
         }
 
         /* Sets the speed of the left hand side of the drivetrain */
-        public void setLeftSpeed(double speed) {
+        void setLeftSpeed(double speed) {
            if(speed > PWM_CURRENTSPEED) {
                 speed = PWM_CURRENTSPEED;
             }
@@ -161,14 +211,39 @@ public class Robot extends IterativeRobot {
             if(!retard) l2.jaguar.set(speed);
         }
         
-        public void setBrakeRight(boolean brake) {
+        void setBrakeRight(boolean brake) {
             r1.digitalOutput.set(brake);
             r2.digitalOutput.set(brake);
         }
 
-        public void setBrakeLeft(boolean brake) {
+        void setBrakeLeft(boolean brake) {
             l1.digitalOutput.set(brake);
             l2.digitalOutput.set(brake);
+        }
+    }
+
+    /* Class for controlling the 2011 manipulator */
+    private class Manipulator {
+
+        /* Limit switches */
+        DigitalInput lim1, lim2, lim3, lim4, lim5, lim6, lim7, lim8, lim9,
+                lim10;
+
+        /* Victors */
+        Victor vic1, vic2, vic3, vic4, vic5;
+        
+        Relay test;
+        Manipulator() {
+            
+
+        }
+
+        void setArmPosition(int position) {
+
+        }
+
+        void fullForward() {
+            test.set(Relay.Value.kForward);
         }
     }
 
@@ -188,14 +263,14 @@ public class Robot extends IterativeRobot {
     }
 
     /* Usage: ToggleListener tl = new ToggleListener(buttonNumber). Read boolean
-       from tl.on for toggle value.  */
+       from tl.on for current toggle state.  */
     private class ToggleListener implements Runnable {
 
         int buttonNumber;
         int pollRate = 10;
-        Thread thread;
-        boolean run = true;
-        boolean isPressed = false;
+        private Thread thread;
+        private boolean run = true;
+        private boolean isPressed = false;
         boolean on = false;
 
 
@@ -237,16 +312,51 @@ public class Robot extends IterativeRobot {
     	
         }
 
-        public void stop() {
+        void stop() {
             run = false;
         }
         }
 
+    /* Prints a line to the User Messages box on the driver station software. */
+    private class DriverStationBuffer {
+
+        DriverStationLCD lcd;
+        String line2 = "", line3 = "", line4 = "", line5 = "", line6 = "";
+
+        /* Null bytes because this library is retarded as fuck */
+        final String nullBytes = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+        DriverStationBuffer() {
+            lcd = DriverStationLCD.getInstance();
+        }
+
+        void println(String line) {
+            line2 = line3;
+            line3 = line4;
+            line4 = line5;
+            line5 = line6;
+            line6 = line;
+
+            lcd.println(Line.kUser6, 1, line6+nullBytes);
+            lcd.println(Line.kUser5, 1, line5+nullBytes);
+            lcd.println(Line.kUser4, 1, line4+nullBytes);
+            lcd.println(Line.kUser3, 1, line3+nullBytes);
+            lcd.println(Line.kUser2, 1, line2+nullBytes);
+
+            lcd.updateLCD();
+        }
+    }
+
+    /* Special/useful debug functions */
     private void printButtonsHeld() {
-        for(int i = 1; i <= 30; i++) {
+        for(int i = 1; i <= 12; i++) {
             boolean held = joystick1.getRawButton(i);
             if(held)
             System.out.println("Button "+i+": "+held);
         }
+    }
+
+    private void printEncoderStatus() {
+        System.out.println("en1: "+en1.get()+" en2: "+en2.get());
     }
  }
