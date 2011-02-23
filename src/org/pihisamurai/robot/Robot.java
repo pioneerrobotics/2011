@@ -4,10 +4,11 @@
 
 package org.pihisamurai.robot;
 
+import edu.wpi.first.wpilibj.AnalogChannel;
+import edu.wpi.first.wpilibj.Dashboard;
 import edu.wpi.first.wpilibj.DigitalInput;
 import edu.wpi.first.wpilibj.DigitalOutput;
 import edu.wpi.first.wpilibj.DriverStation;
-import edu.wpi.first.wpilibj.DriverStation.Alliance;
 import edu.wpi.first.wpilibj.DriverStationLCD;
 import edu.wpi.first.wpilibj.DriverStationLCD.Line;
 import edu.wpi.first.wpilibj.Encoder;
@@ -17,6 +18,7 @@ import edu.wpi.first.wpilibj.Jaguar;
 import edu.wpi.first.wpilibj.Joystick;
 import edu.wpi.first.wpilibj.Relay;
 import edu.wpi.first.wpilibj.Victor;
+import edu.wpi.first.wpilibj.camera.AxisCamera;
 
 public class Robot extends IterativeRobot {
 
@@ -30,13 +32,17 @@ public class Robot extends IterativeRobot {
     final int PWM_LEFT_1 = 3; /* Front left (Inara) */
     final int PWM_LEFT_2 = 2; /* Back left (Zoe) */
 
+    final int ARM_1 = 10; /* Elbow */
+    final int ARM_2 = 9; /* Wrist */
+    final int ARM_3 = 8; /* Fingers */
+
     /* We assume that the Digital I/O for each Jaguar is plugged into the same
        slot and numbers as the PWM plugs. */
-    
+
     /* Max value PWM is capable of */
     final double PWM_NOMINALSPEED = 1.0;
     /* Fraction of nominal speed we should target in autonomous mode */
-    final double AUTONOMOUS_TARGETSPEED = 0.5;
+    final double AUTONOMOUS_TARGETSPEED = 0.4;
 
     /* Gyro sensitivity */
     final double GYRO_SENSITIVITY = 0.007;
@@ -52,13 +58,20 @@ public class Robot extends IterativeRobot {
     /* Number of meters from OPT_3 to the robot's center of rotation */
     final double OPT_OFFSET = 0.5;
 
-    /* Digital input slots for encoders */
+    /* Digital input slots for drivetrain encoders */
     final int ENC_1 = 5; /* Left */
-    final int ENC_2 = 7; /* Right */
+
+    /* Digital input slots for arm encoders */
+    final int ENC_ARM_1 = 7;
+    final int ENC_ARM_2 = 12;
 
     /* Digital input slots for initial switches */
-    final int SWITCH_1 = 5;
-    final int SWITCH_2 = 6;
+    final int SWITCH_1 = 14; /* Elbow */
+
+    /* Analog input slots for initial switches */
+    final int SWITCH_2 = 1; /* Wrist */
+    final int SWITCH_3 = 2; /* Finger 1 */
+    final int SWITCH_4 = 3; /* Finger 2 */
 
      /* Number of encoder pulses per meter */
     final int ENC_DISTANCE_PER_PULSE = 1;
@@ -69,6 +82,11 @@ public class Robot extends IterativeRobot {
     /* Wheel: Percentage deadzone */
     final double G27_DEADZONE = 0.00;
 
+    /* Poll rate for autonomous and teleoperated threads in ms */
+    final long POLL_RATE = 1;
+
+    /* See DriverStationBuffer for camera settings */
+
     /******************************/
 
     double PWM_CURRENTSPEED = PWM_NOMINALSPEED;
@@ -77,16 +95,15 @@ public class Robot extends IterativeRobot {
        perspective of the robot, not the drivers. */
     boolean middlePosition = false, middleLeft = false;
     boolean wasAutonomous = false;
-
-    int reverse;
+    boolean wasTeleoperated = false;
 
     JaguarHelper jr1, jr2, jl1, jl2;
+    Victor arm1, arm2, arm3;
 
     Drivetrain drivetrain;
     Manipulator manipulator;
     Joystick g27;
-    double g27X;
-    double g27Throttle;
+    //Joystick joystick;
 
     ToggleListener perspectiveToggle;
 
@@ -97,8 +114,8 @@ public class Robot extends IterativeRobot {
     DriverStation driverStation;
     DriverStationBuffer buffer;
 
-    AutonomousMiddle middleThread;
-    AutonomousSide sideThread;
+    Autonomous autonomousThread;
+    Teleoperated teleoperatedThread;
 
     /* The middle poles on each side are slightly higher than the side pole. Use
        a digital switch on the robot that we will flip prior to the round to set
@@ -111,8 +128,14 @@ public class Robot extends IterativeRobot {
 
         buffer.println("*** Robot Init ***");
 
-        drivetrain = new Drivetrain();
+        jr1 = new JaguarHelper(DIGITAL_IO_SLOT, PWM_RIGHT_1);
+        jr2 = new JaguarHelper(DIGITAL_IO_SLOT, PWM_RIGHT_2);
+        jl1 = new JaguarHelper(DIGITAL_IO_SLOT, PWM_LEFT_1);
+        jl2 = new JaguarHelper(DIGITAL_IO_SLOT, PWM_LEFT_2);
+
+        drivetrain = new Drivetrain(jr1, jr2, jl1, jl2);
         g27 = new Joystick(1);
+        //joystick = new Joystick(2);
 
         perspectiveToggle = new ToggleListener(8);
 
@@ -122,159 +145,78 @@ public class Robot extends IterativeRobot {
         enc1 = new Encoder(DIGITAL_IO_SLOT, ENC_1, DIGITAL_IO_SLOT, ENC_1+1);
         //enc2 = new Encoder(DIGITAL_IO_SLOT, ENC_2);
 
-        enc1.setDistancePerPulse(ENC_DISTANCE_PER_PULSE);
+        //enc1.setDistancePerPulse(ENC_DISTANCE_PER_PULSE);
         //enc2.setDistancePerPulse(ENC_DISTANCE_PER_PULSE);
         gyro1 = new Gyro(ANALOG_IO_SLOT, GYRO_1);
         gyro1.setSensitivity(GYRO_SENSITIVITY);
 
-        manipulator = new Manipulator();
+        arm1 = new Victor(DIGITAL_IO_SLOT, ARM_1);
+        manipulator = new Manipulator(arm1);
 
         buffer.println("Init finished");
     }
 
     public void autonomousInit() {
+        killThreads();
         buffer.println("Autonomous");
-
         wasAutonomous = true;
-
-        Alliance alliance = driverStation.getAlliance();
-
-        if(alliance == DriverStation.Alliance.kBlue) {
-            buffer.println("Blue alliance");
-        }
-        else if(alliance == DriverStation.Alliance.kRed) {
-            buffer.println("Red alliance");
-        }
-        buffer.println("Driver pos "+driverStation.getLocation());
-
-        /* Autonomous switches */
-        //DigitalInput switch1 = new DigitalInput(DIGITAL_IO_SLOT, SWITCH_1),
-                //switch2 = new DigitalInput(DIGITAL_IO_SLOT, SWITCH_2);
-        //if(switch1.get()) {
-        if(true) {
-            middlePosition = true;
-            //if(switch2.get()) {
-            if(true) {
-                middleLeft = true;
-            }
-        }
-
-        if(middlePosition) {
-            buffer.println("AUTO: Middle pos");
-            if(middleLeft) {
-                buffer.println("AUTO: Target left");
-            }
-            else {
-                buffer.println("AUTO: Target right");
-            }
-            buffer.println("AUTO: Middle thread");
-            middleThread = new AutonomousMiddle();
-            middleThread.start();
-        }
-        else {
-            buffer.println("AUTO: Side position");
-            buffer.println("AUTO: Side thread");
-            sideThread = new AutonomousSide();
-            sideThread.start();
-        }
+        buffer.println("AUTO: Auto thread");
+        autonomousThread = new Autonomous();
+        autonomousThread.start();
         buffer.println("AUTO: Init finished");
 
     }
 
-    public void autonomousContinuous() {
-
-        
+    public void autonomousPeriodic() {
+        //buffer.updateCamera();
     }
 
     public void disabledInit() {
-        buffer.println("Disabled");
-        if(wasAutonomous) {
-        /* Kill all autonomous functions */
-        if(middlePosition) {
-            middleThread.stop();
-        }
-        else {
-            sideThread.stop();
-        }
-        }
-
-        drivetrain.setRightSpeed(0);
-        drivetrain.setLeftSpeed(0);
-        
-        wasAutonomous = false;
+        killThreads();
     }
 
     public void teleopInit() {
+        killThreads();
         buffer.println("Teleoperated");
+        wasTeleoperated = true;
+        buffer.println("Teleop thread");
+        teleoperatedThread = new Teleoperated();
+        teleoperatedThread.start();
     }
 
+    public void teleopPeriodic() {
+        //buffer.updateCamera();
+    }
+    /* Teleop Continuous: handles arm input */
     public void teleopContinuous() {
-            /* Perspective reversal */
-            if(perspectiveToggle.on) {
-                reverse = -1;
-            }
-            else {
-                reverse = 1;
-            }
-
-            if(!g27.getRawButton(5) && !g27.getRawButton(6)) {
-            /* Positive throttle is brake, negative throttle is accelerate */
-            /* Pedals must be on single axis mode */
-            drivetrain.setBrakeRight(false);
-            drivetrain.setBrakeLeft(false);
-            PWM_CURRENTSPEED = 1;
-
-            g27X = g27.getX(); g27Throttle = g27.getThrottle();
-
-            if(Math.abs(g27X) <= G27_DEADZONE) {
-                g27X = 0;
-            }
-            if(Math.abs(g27Throttle) <= G27_DEADZONE) {
-                g27Throttle = 0;
-            }
-
-            drivetrain.setRightSpeed(g27X+g27Throttle
-                    *reverse);
-            drivetrain.setLeftSpeed(-g27X+g27Throttle
-                    *reverse);
-            }
-            else {
-            drivetrain.setRightSpeed(0);
-            drivetrain.setLeftSpeed(0);
-            drivetrain.setBrakeRight(true);
-            drivetrain.setBrakeLeft(true);
-            }
-            //printOpticalStatus();
-            /*System.out.println("Center: "+opt3.get()+"Left: "+opt1.get()+
-                    "Right: "+opt2.get()); */
-        //printEncoderStatus();
-        /* System.out.println("Gyro 1, 1: "+gyro1.getAngle() % 180 + 180); */
-
-        //System.out.println("end1a: "+end1a.get()+" end1b: "+end1b.get()+
-                //" end2a: "+end2a.get()+" end2b: "+end2b.get());
-        //System.out.println("Something weird");
-        /* printButtonsHeld(); */
-
-        /*System.out.println("Joystick X: "+g27.getX());
-          System.out.println("Joystick Y: "+g27.getY());
-          System.out.println("Joystick Z: "+g27.getZ());
-          System.out.println("Joystick T: "+g27.getThrottle());*/
-            //drivetrain.printStatus();
+        if(g27.getRawButton(1) && g27.getRawButton(4)) {
+            manipulator.setElbowSpeed(0);
+        }
+        else if(g27.getRawButton(1)) {
+            manipulator.setElbowSpeed(1.0);
+        }
+        else if(g27.getRawButton(4)) {
+            manipulator.setElbowSpeed(-1.0);
+        }
+        else {
+            manipulator.setElbowSpeed(0);
+        }
     }
 
     /* Simple drivetrain class for four motor tank drive */
-    private class Drivetrain {
+     private class Drivetrain {
 
         JaguarHelper r1, r2, l1, l2;
 
         boolean retard = false;
 
-        Drivetrain() {
-            r1 = new JaguarHelper(DIGITAL_IO_SLOT, PWM_RIGHT_1);
-            r2 = new JaguarHelper(DIGITAL_IO_SLOT, PWM_RIGHT_2);
-            l1= new JaguarHelper(DIGITAL_IO_SLOT, PWM_LEFT_1);
-            l2 = new JaguarHelper(DIGITAL_IO_SLOT, PWM_LEFT_2);
-        }
+        Drivetrain(JaguarHelper r1, JaguarHelper r2, JaguarHelper l1,
+                JaguarHelper l2) {
+            this.r1 = r1;
+            this.r2 = r2;
+            this.l1 = l1;
+            this.l2 = l2;
+            }
 
         /* Retard mode true = only runs one pair of motors */
         public boolean setRetardedMode(boolean set) {
@@ -288,7 +230,7 @@ public class Robot extends IterativeRobot {
         }
 
         /* Sets the speed of the right hand side of the drivetrain */
-        void setRightSpeed(double speed) {
+        public void setRightSpeed(double speed) {
             if(speed > PWM_CURRENTSPEED) {
                 speed = PWM_CURRENTSPEED;
             }
@@ -300,7 +242,7 @@ public class Robot extends IterativeRobot {
         }
 
         /* Sets the speed of the left hand side of the drivetrain */
-        void setLeftSpeed(double speed) {
+        public void setLeftSpeed(double speed) {
            if(speed > PWM_CURRENTSPEED) {
                 speed = PWM_CURRENTSPEED;
             }
@@ -310,26 +252,15 @@ public class Robot extends IterativeRobot {
             l1.jaguar.set(speed);
             if(!retard) l2.jaguar.set(speed);
         }
-        
-        void setBrakeRight(boolean brake) {
-            setRightSpeed(0);
+
+        public void setBrakeRight(boolean brake) {
             r1.digitalOutput.set(brake);
             r2.digitalOutput.set(brake);
         }
 
-        void setBrakeLeft(boolean brake) {
-            setLeftSpeed(0);
+        public void setBrakeLeft(boolean brake) {
             l1.digitalOutput.set(brake);
             l2.digitalOutput.set(brake);
-        }
-
-        void printStatus() {
-            //System.out.println("r1 "+r1.jaguar.get()+" r2 "+r2.jaguar.get()+
-            //        " l1"+l1.jaguar.get()+" l2"+l2.jaguar.get());
-            buffer.println("R1: "+r1.jaguar.get());
-            buffer.println("R2: "+r2.jaguar.get());
-            buffer.println("L1: "+l1.jaguar.get());
-            buffer.println("L2: "+l2.jaguar.get());
         }
     }
 
@@ -337,19 +268,34 @@ public class Robot extends IterativeRobot {
     private class Manipulator {
 
         /* Limit switches */
-        DigitalInput lim1, lim2, lim3, lim4, lim5, lim6, lim7, lim8, lim9,
-                lim10;
+        AnalogChannel pot1, pot2, pot3;
 
         /* Victors */
-        Victor vic1, vic2, vic3, vic4, vic5;
-        
+        Victor arm1, arm2, arm3;
+
         Relay test;
-        Manipulator() {
-            
+        Manipulator(Victor arm1) {
+            this.arm1 = arm1;
 
         }
 
-        void setArmPosition(int position) {
+        void setElbowSpeed(double speed) {
+            arm1.set(speed);
+        }
+
+        void setAarmPosition(int position) {
+
+        }
+
+        void setWristGrab(boolean grab) {
+
+        }
+
+        void setFingerGrab(boolean grab) {
+
+        }
+
+        void setElbowPosition(int position, boolean high){
 
         }
 
@@ -419,7 +365,7 @@ public class Robot extends IterativeRobot {
                 catch(Exception e) {
                     System.out.println("Exception: "+e);
                 }
-            }    	
+            }
         }
 
         void stop() {
@@ -427,9 +373,64 @@ public class Robot extends IterativeRobot {
         }
         }
 
-    private class AutonomousMiddle implements Runnable {
+    private class Teleoperated implements Runnable {
+        final long pollRate = POLL_RATE;
+        private Thread thread;
+        private boolean run = true;
 
-        final long pollRate = 1;
+        Teleoperated() {
+            thread = new Thread(this);
+        }
+
+        void start() {
+            thread.start();
+        }
+
+        public void run() {
+            while(run && driverStation.isOperatorControl()) {
+            try {
+
+            int reverse = 1;
+
+            /* Perspective reversal */
+            if(perspectiveToggle.on) {
+                reverse = -1;
+            }
+
+            if(!g27.getRawButton(5) && !g27.getRawButton(6)) {
+            /* Positive throttle is brake, negative throttle is accelerate */
+            /* Pedals must be on single axis mode */
+            drivetrain.setBrakeRight(false);
+            drivetrain.setBrakeLeft(false);
+            PWM_CURRENTSPEED = 1;
+            drivetrain.setRightSpeed(g27.getX()+g27.getThrottle()
+                    *reverse);
+            drivetrain.setLeftSpeed(-g27.getX()+g27.getThrottle()
+                    *reverse);
+            }
+            else {
+            drivetrain.setRightSpeed(0);
+            drivetrain.setLeftSpeed(0);
+            drivetrain.setBrakeRight(true);
+            drivetrain.setBrakeLeft(true);
+            }
+            Thread.sleep(pollRate);
+            }
+            catch(Exception e) {
+                System.out.println("Exception: "+e);
+            }
+        }
+        }
+
+        void stop() {
+            run = false;
+            buffer.println("Teleop thread stopped");
+        }
+    }
+
+    private class Autonomous implements Runnable {
+
+        final long pollRate = POLL_RATE;
         /* Cycles we should wait before correcting direction */
         final long autoCorrectLag = AUTOCORRECT_LAG;
         long autoCorrect = 0;
@@ -443,7 +444,7 @@ public class Robot extends IterativeRobot {
         double targetSpeed;
         double encoderInitial;
 
-    	AutonomousMiddle()
+    	Autonomous()
         {
             sensor1 = opt1;
             sensor2 = opt2;
@@ -501,7 +502,7 @@ public class Robot extends IterativeRobot {
 
                 /* Phase 1: Robot is on middle line. Full forward. */
                 /* Phase 3: Robot is on line after fork. Full forward. */
-                if(phase == 1 || phase == 5) {
+                if(phase == 1) {
                     if(!sensor3On && !sensor1On && !sensor2On) {
                         fullForward();
                         autoCorrect = 0;
@@ -522,7 +523,7 @@ public class Robot extends IterativeRobot {
                         }
                         else {
                             turnLeft();
-                        }                        
+                        }
                     }
                      /* Autocorrect: left sensor OFF, right sensor ON */
                     else if(!sensor1On && sensor2On) {
@@ -538,57 +539,13 @@ public class Robot extends IterativeRobot {
                     else if(sensor3On && sensor1On && sensor2On) {
                         phase++;
                         if(phase == 2)
-                        buffer.println("AUTO: Phase 2: Fork");
-                        else
-                        buffer.println("AUTO: Phase 5: Pre-hang");
+                        buffer.println("AUTO: Phase 2: At T");
                     }
                 }
                 else if(phase == 2) {
-                    if(sensor3On && sensor1On && sensor2On) {
-                    fullForward();
-                    }
-                    /* We're now at the fork. Drive forward for OPT_OFFSET and
-                       turn left or right. */
-                    else if(sensor3On && !sensor1On && !sensor2On) {
-                        encoder1.reset();
-                        //encoder2.reset();
-                        encoderInitial = getEncoderDistance();
-
-                        phase++;
-                        buffer.println("AUTO: Phase 3: Fork");
-
-                    }
-                    
+                    /* Turn to match gyro position, score uberring */
+                    /* ... */
                 }
-                else if(phase == 3) {
-                    fullForward();
-                    if(getEncoderDistance() > OPT_OFFSET) {
-                        drivetrain.setBrakeRight(true);
-                        drivetrain.setBrakeLeft(true);
-                        phase++;
-                    }
-                }
-                else if(phase == 4) {
-                    if(sensor1On || sensor2On) {
-                            autoCorrect = autoCorrectLag;
-                            phase++;
-                        }
-
-                        if(middleLeft) {
-                        turnLeft();
-                        }
-                        else {
-                        turnRight();
-                        }
-                }
-                /* Final phase: robot has reached the final WTF situation. Turn
-                   based on initial gyro reading, adjust, and score.*/
-                else if(phase == 6) {
-                    drivetrain.setBrakeRight(true);
-                    drivetrain.setBrakeLeft(true);
-                    break;
-                }
-
                 Thread.sleep(pollRate);
                 }
                 catch(Exception e) {
@@ -599,54 +556,20 @@ public class Robot extends IterativeRobot {
 
         void stop() {
             run = false;
+            buffer.println("AUTO: Thread stopped");
         }
         }
-
-     private class AutonomousSide implements Runnable {
-
-        final long pollRate = 1;
-        private Thread thread;
-        private boolean run = true;
-        DigitalInput sensor1, sensor2, sensor3;
-        boolean sensor1On, sensor2On, sensor3On;
-        Gyro gyro;
-        double gyroPosition;
-
-    	AutonomousSide()
-        {
-            thread = new Thread(this);
-        }
-
-        void start() {
-            run = true;
-            buffer.println("AUTO: Side thread start");
-            thread.start();
-        }
-
-    	public void run() {
-            while(run && driverStation.isAutonomous()) {
-                try {
-
-
-
-                Thread.sleep(pollRate);
-                }
-                catch(Exception e) {
-                    System.out.println("Exception: "+e);
-                }
-            }
-        }
-
-        void stop() {
-            run = false;
-        }
-        }
-
 
     /* Prints a line to the User Messages box on the driver station software. */
     private class DriverStationBuffer {
 
+        private int CAMERA_MAX_FPS = 5;
+        private int CAMERA_COMPRESSION = 0;
+        private AxisCamera.ResolutionT CAMERA_RES =
+                AxisCamera.ResolutionT.k640x480;
+
         DriverStationLCD lcd;
+        AxisCamera camera;
         String line2 = "", line3 = "", line4 = "", line5 = "", line6 = "";
 
         /* Null bytes because this library is retarded as fuck */
@@ -654,6 +577,11 @@ public class Robot extends IterativeRobot {
 
         DriverStationBuffer() {
             lcd = DriverStationLCD.getInstance();
+            //camera = AxisCamera.getInstance();
+
+            //camera.writeResolution(AxisCamera.ResolutionT.k640x480);
+            //camera.writeMaxFPS(CAMERA_MAX_FPS);
+            //camera.writeCompression(CAMERA_COMPRESSION);
         }
 
         void println(String line) {
@@ -672,6 +600,35 @@ public class Robot extends IterativeRobot {
             lcd.println(Line.kUser2, 1, line2+nullBytes);
 
             lcd.updateLCD();
+        }
+
+        void updateCamera() {
+            lcd.updateLCD();
+        }
+    }
+
+    private void killThreads() {
+        if(wasAutonomous) {
+            autonomousThread.stop();
+        }
+        if(wasTeleoperated) {
+            teleoperatedThread.stop();
+        }
+
+        drivetrain.setRightSpeed(0);
+        drivetrain.setLeftSpeed(0);
+
+        wasAutonomous = false;
+        wasTeleoperated = false;
+    }
+
+    private class analogSwitch {
+        AnalogChannel channel;
+        analogSwitch(AnalogChannel channel) {
+            this.channel = channel;
+        }
+        boolean get() {
+            return (channel.getVoltage() > 2.5);
         }
     }
 
